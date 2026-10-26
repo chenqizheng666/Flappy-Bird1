@@ -1,0 +1,11 @@
+{
+  "name": "flappy-bird",
+  "version": "1.0.0",
+  "description": "Flappy Bird 重制版 - 原生 Canvas 游戏，零依赖",
+  "scripts": {
+    "dev": "npx --yes http-server -p 3000 -c-1 .",
+    "start": "npx --yes http-server -p 3000 ."
+  },
+  "keywords": ["game", "p5js", "flappy-bird"],
+  "license": "MIT"
+}

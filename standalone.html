@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Flappy Bird - 优化版</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    background: #1b2632;
+    overflow: hidden;
+    touch-action: manipulation;
+  }
+  canvas { border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+<script>
+// ============ 全局配置 ============
+const CFG = {
+  W: 400, H: 600,
+  gravity: 0.45,
+  jumpForce: -8.5,
+  birdX: 80,
+  birdSize: 28,
+  pipeSpeedBase: 3,
+  pipeW: 52,
+  gapBase: 165,
+  gapMin: 120,
+  spawnEvery: 90,
+};
+
+let bird, pipes = [], particles = [], clouds = [];
+let score = 0, best = 0;
+let state = 'ready'; // ready | playing | over
+let speed = CFG.pipeSpeedBase;
+let gap = CFG.gapBase;
+let frame = 0;
+let flapAnim = 0;
+let scoreSound, hitSound, flapSound;
+
+// ============ 音效（Web Audio 合成，无需素材）============
+function initAudio() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  function tone(freq, dur, type = 'square', vol = 0.08, slide = 0) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    if (slide) o.frequency.linearRampToValueAtTime(freq + slide, ctx.currentTime + dur);
+    g.gain.setValueAtTime(vol, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + dur);
+  }
+  flapSound = () => tone(500, 0.1, 'sine', 0.12, 300);
+  scoreSound = () => { tone(880, 0.08, 'square', 0.06); setTimeout(() => tone(1320, 0.12, 'square', 0.06), 70); };
+  hitSound = () => tone(120, 0.3, 'sawtooth', 0.15, -60);
+}
+
+// ============ 初始化 ============
+function setup() {
+  const c = createCanvas(CFG.W, CFG.H);
+  c.parent(document.body);
+  best = int(localStorage.getItem('flappyBest') || 0);
+  bird = makeBird();
+  for (let i = 0; i < 5; i++) {
+    clouds.push({ x: random(width), y: random(40, 200), s: random(0.5, 1.3) });
+  }
+  initAudio();
+  textFont('sans-serif');
+}
+
+function makeBird() {
+  return { x: CFG.birdX, y: height / 2, vy: 0, size: CFG.birdSize };
+}
+
+// ============ 主循环 ============
+function draw() {
+  frame++;
+  drawSky();
+  drawClouds();
+
+  if (state === 'ready') {
+    bird.y = height / 2 + sin(frame * 0.08) * 12; // 悬浮动画
+    bird.vy = 0;
+  } else if (state === 'playing') {
+    bird.vy += CFG.gravity;
+    bird.y += bird.vy;
+
+    updatePipes();
+    if (frame % CFG.spawnEvery === 0) pipes.push(new Pipe());
+
+    if (bird.y < bird.size / 2 || bird.y > height - bird.size / 2) {
+      die();
+      bird.y = constrain(bird.y, bird.size / 2, height - bird.size / 2);
+    }
+  } else { // over：小鸟坠落
+    bird.vy += CFG.gravity * 1.4;
+    bird.y = min(bird.y + bird.vy, height - bird.size / 2);
+  }
+
+  drawParticles();
+  drawBird();
+
+  // 记分板
+  fill(255);
+  textSize(28);
+  textStyle(BOLD);
+  stroke(0, 0, 0, 80); strokeWeight(4);
+  text(score, width / 2, 50);
+  noStroke();
+  textStyle(NORMAL);
+
+  if (state === 'ready') drawReady();
+  if (state === 'over') drawOver();
+}
+
+// ============ 场景绘制 ============
+function drawSky() {
+  // 随分数渐变的日落天空
+  const t = constrain(score / 30, 0, 1);
+  const top = lerpColor(color(135, 206, 235), color(90, 60, 120), t);
+  const bottom = lerpColor(color(200, 235, 250), color(250, 150, 100), t);
+  for (let y = 0; y < height; y += 4) {
+    stroke(lerpColor(top, bottom, y / height));
+    line(0, y, width, y);
+  }
+  noStroke();
+}
+
+function drawClouds() {
+  fill(255, 200);
+  noStroke();
+  for (const c of clouds) {
+    c.x -= speed * 0.3 * c.s;
+    if (c.x < -80) { c.x = width + 80; c.y = random(40, 200); }
+    ellipse(c.x, c.y, 50 * c.s, 24 * c.s);
+    ellipse(c.x + 25 * c.s, c.y + 5, 40 * c.s, 20 * c.s);
+    ellipse(c.x - 25 * c.s, c.y + 8, 36 * c.s, 18 * c.s);
+  }
+}
+
+function drawBird() {
+  push();
+  translate(bird.x, bird.y);
+  // 根据速度倾斜
+  const ang = state === 'ready' ? 0 : constrain(map(bird.vy, -8, 10, -0.45, 1.1), -0.45, 1.1);
+  rotate(ang);
+  // 身体
+  fill(255, 200, 40);
+  stroke(200, 140, 0);
+  strokeWeight(2);
+  ellipse(0, 0, bird.size);
+  // 翅膀（扇动）
+  flapAnim += 0.35;
+  const wingY = sin(state === 'playing' ? flapAnim : frame * 0.15) * 5;
+  fill(255, 230, 120);
+  ellipse(-4, wingY, 16, 10);
+  // 眼睛
+  fill(255); noStroke();
+  ellipse(8, -6, 10);
+  fill(0);
+  ellipse(10, -6, 5);
+  // 嘴
+  fill(255, 120, 0);
+  triangle(12, 0, 20, 2, 12, 6);
+  pop();
+  noStroke();
+}
+
+// ============ 管道 ============
+class Pipe {
+  constructor() {
+    this.w = CFG.pipeW;
+    this.x = width;
+    this.top = random(60, height - gap - 60);
+    this.passed = false;
+    // 缺口边缘的盖子宽度（视觉细节）
+  }
+  update() { this.x -= speed; }
+  show() {
+    const gh = height - this.top - gap;
+    fill(34, 160, 60);
+    stroke(20, 110, 40);
+    strokeWeight(3);
+    rect(this.x, 0, this.w, this.top);
+    rect(this.x, this.top + gap, this.w, gh);
+    // 缺口处加宽的管口盖
+    fill(50, 190, 80);
+    rect(this.x - 4, this.top - 16, this.w + 8, 16, 3);
+    rect(this.x - 4, this.top + gap, this.w + 8, 16, 3);
+    noStroke();
+  }
+  offScreen() { return this.x + this.w < 0; }
+  hit(b) {
+    const r = b.size / 2;
+    if (b.x + r > this.x && b.x - r < this.x + this.w) {
+      if (b.y - r < this.top || b.y + r > this.top + gap) return true;
+    }
+    return false;
+  }
+}
+
+function updatePipes() {
+  for (let i = pipes.length - 1; i >= 0; i--) {
+    const p = pipes[i];
+    p.update();
+    p.show();
+    if (p.hit(bird)) { die(); }
+    if (!p.passed && p.x + p.w < bird.x) {
+      score++;
+      p.passed = true;
+      scoreSound();
+      burst(bird.x + 15, bird.y, color(255, 230, 90));
+      // 难度递增
+      speed = CFG.pipeSpeedBase + min(score * 0.06, 2.5);
+      gap = max(CFG.gapBase - score * 1.2, CFG.gapMin);
+    }
+    if (p.offScreen()) pipes.splice(i, 1);
+  }
+}
+
+// ============ 粒子 ============
+function burst(x, y, c) {
+  for (let i = 0; i < 10; i++) {
+    particles.push({
+      x, y,
+      vx: random(-2, 2), vy: random(-3, 1),
+      life: 30, c
+    });
+  }
+}
+function drawParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life--;
+    fill(red(p.c), green(p.c), blue(p.c), p.life * 8);
+    ellipse(p.x, p.y, 5);
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+// ============ 界面 ============
+function drawReady() {
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(40); textStyle(BOLD);
+  stroke(0, 0, 0, 80); strokeWeight(4);
+  text("Flappy Bird", width / 2, height / 2 - 90);
+  textSize(18); textStyle(NORMAL);
+  text("点击 / 空格 起飞", width / 2, height / 2 + 90);
+  if (best > 0) text("最高分: " + best, width / 2, height / 2 + 120);
+  noStroke();
+  textAlign(LEFT, BASELINE);
+}
+
+function drawOver() {
+  fill(0, 0, 0, 100);
+  rect(0, 0, width, height);
+  textAlign(CENTER, CENTER);
+  fill(255);
+  stroke(0, 0, 0, 80); strokeWeight(4);
+  textSize(44); textStyle(BOLD);
+  text("游戏结束", width / 2, height / 2 - 70);
+  textSize(26); textStyle(NORMAL);
+  text("得分: " + score, width / 2, height / 2 - 15);
+  if (score > best) {
+    fill(255, 220, 60);
+    text("🏆 新纪录!", width / 2, height / 2 + 20);
+  } else {
+    text("最高分: " + best, width / 2, height / 2 + 20);
+  }
+  fill(255, 180);
+  textSize(16);
+  text("点击 / 空格 重新开始", width / 2, height / 2 + 70);
+  noStroke();
+  textAlign(LEFT, BASELINE);
+}
+
+// ============ 交互 ============
+function flap() {
+  if (state === 'ready') {
+    state = 'playing';
+    reset();
+    bird.vy = CFG.jumpForce;
+    flapSound();
+  } else if (state === 'playing') {
+    bird.vy = CFG.jumpForce;
+    flapSound();
+    burst(bird.x - 12, bird.y + 8, color(255, 255, 255));
+  } else if (frame - overAt > 30) { // 结束后短暂延迟防止误触
+    state = 'ready';
+  }
+}
+
+let overAt = 0;
+
+function reset() {
+  bird = makeBird();
+  pipes = [];
+  score = 0;
+  speed = CFG.pipeSpeedBase;
+  gap = CFG.gapBase;
+}
+
+function die() {
+  if (state !== 'playing') return;
+  state = 'over';
+  overAt = frame;
+  hitSound();
+  burst(bird.x, bird.y, color(255, 80, 60));
+  best = max(score, best);
+  localStorage.setItem('flappyBest', best);
+}
+
+function mousePressed() { userStartAudio?.(); flap(); }
+function keyPressed() {
+  if (key === ' ' || keyCode === UP_ARROW) { flap(); return false; }
+}
+function touchStarted() { flap(); return false; }
+</script>
+</body>
+</html>

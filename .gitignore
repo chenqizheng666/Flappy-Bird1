@@ -1,0 +1,5 @@
+# 忽略依赖与本地产物
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
